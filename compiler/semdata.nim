@@ -72,12 +72,6 @@ type
 
   TExprFlags* = set[TExprFlag]
 
-  TTypeAttachedOp* = enum
-    attachedAsgn,
-    attachedSink,
-    attachedDeepCopy,
-    attachedDestructor
-
   PContext* = ref TContext
   TContext* = object of TPassContext # a context represents a module
     enforceVoidContext*: PType
@@ -241,7 +235,7 @@ proc newContext*(graph: ModuleGraph; module: PSym): PContext =
 
 proc inclSym(sq: var seq[PSym], s: PSym) =
   var L = len(sq)
-  for i in countup(0, L - 1):
+  for i in 0 ..< L:
     if sq[i].id == s.id: return
   setLen(sq, L + 1)
   sq[L] = s
@@ -298,10 +292,12 @@ proc makeTypeDesc*(c: PContext, typ: PType): PType =
     result = typ
   else:
     result = newTypeS(tyTypeDesc, c)
+    incl result.flags, tfCheckedForDestructor
     result.addSonSkipIntLit(typ)
 
 proc makeTypeSymNode*(c: PContext, typ: PType, info: TLineInfo): PNode =
   let typedesc = newTypeS(tyTypeDesc, c)
+  incl typedesc.flags, tfCheckedForDestructor
   typedesc.addSonSkipIntLit(assertNotNil(c.config, typ))
   let sym = newSym(skType, c.cache.idAnon, getCurrOwner(c), info,
                    c.config.options).linkTo(typedesc)
@@ -380,6 +376,7 @@ template rangeHasUnresolvedStatic*(t: PType): bool =
 proc errorType*(c: PContext): PType =
   ## creates a type representing an error state
   result = newTypeS(tyError, c)
+  result.flags.incl tfCheckedForDestructor
 
 proc errorNode*(c: PContext, n: PNode): PNode =
   result = newNodeI(nkEmpty, n.info)

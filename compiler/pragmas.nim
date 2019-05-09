@@ -21,17 +21,17 @@ const
 const
   procPragmas* = {FirstCallConv..LastCallConv, wImportc, wExportc, wNodecl,
     wMagic, wNosideeffect, wSideeffect, wNoreturn, wDynlib, wHeader,
-    wCompilerProc, wCore, wProcVar, wDeprecated, wVarargs, wCompileTime, wMerge,
+    wCompilerProc, wNonReloadable, wCore, wProcVar, wDeprecated, wVarargs, wCompileTime, wMerge,
     wBorrow, wExtern, wImportCompilerProc, wThread, wImportCpp, wImportObjC,
     wAsmNoStackFrame, wError, wDiscardable, wNoInit, wCodegenDecl,
-    wGensym, wInject, wRaises, wTags, wLocks, wDelegator, wGcSafe, wOverride,
+    wGensym, wInject, wRaises, wTags, wLocks, wDelegator, wGcSafe,
     wConstructor, wExportNims, wUsed, wLiftLocals, wStacktrace, wLinetrace}
   converterPragmas* = procPragmas
   methodPragmas* = procPragmas+{wBase}-{wImportCpp}
   templatePragmas* = {wImmediate, wDeprecated, wError, wGensym, wInject, wDirty,
     wDelegator, wExportNims, wUsed, wPragma}
   macroPragmas* = {FirstCallConv..LastCallConv, wImmediate, wImportc, wExportc,
-    wNodecl, wMagic, wNosideeffect, wCompilerProc, wCore, wDeprecated, wExtern,
+    wNodecl, wMagic, wNosideeffect, wCompilerProc, wNonReloadable, wCore, wDeprecated, wExtern,
     wImportCpp, wImportObjC, wError, wDiscardable, wGensym, wInject, wDelegator,
     wExportNims, wUsed}
   iteratorPragmas* = {FirstCallConv..LastCallConv, wNosideeffect, wSideeffect,
@@ -48,7 +48,7 @@ const
     wDeadCodeElimUnused,  # deprecated, always on
     wDeprecated,
     wFloatchecks, wInfChecks, wNanChecks, wPragma, wEmit, wUnroll,
-    wLinearScanEnd, wPatterns, wEffects, wNoForward, wReorder, wComputedGoto,
+    wLinearScanEnd, wPatterns, wTrMacros, wEffects, wNoForward, wReorder, wComputedGoto,
     wInjectStmt, wDeprecated, wExperimental, wThis}
   lambdaPragmas* = {FirstCallConv..LastCallConv, wImportc, wExportc, wNodecl,
     wNosideeffect, wSideeffect, wNoreturn, wDynlib, wHeader,
@@ -64,7 +64,7 @@ const
   varPragmas* = {wImportc, wExportc, wVolatile, wRegister, wThreadVar, wNodecl,
     wMagic, wHeader, wDeprecated, wCompilerProc, wCore, wDynlib, wExtern,
     wImportCpp, wImportObjC, wError, wNoInit, wCompileTime, wGlobal,
-    wGensym, wInject, wCodegenDecl, wGuard, wGoto, wExportNims, wUsed}
+    wGensym, wInject, wCodegenDecl, wGuard, wGoto, wExportNims, wUsed, wCursor}
   constPragmas* = {wImportc, wExportc, wHeader, wDeprecated, wMagic, wNodecl,
     wExtern, wImportCpp, wImportObjC, wError, wGensym, wInject, wExportNims,
     wIntDefine, wStrDefine, wBoolDefine, wUsed, wCompilerProc, wCore}
@@ -104,7 +104,7 @@ proc illegalCustomPragma*(c: PContext, n: PNode, s: PSym) =
 proc pragmaAsm*(c: PContext, n: PNode): char =
   result = '\0'
   if n != nil:
-    for i in countup(0, sonsLen(n) - 1):
+    for i in 0 ..< sonsLen(n):
       let it = n.sons[i]
       if it.kind in nkPragmaCallKinds and it.len == 2 and it.sons[0].kind == nkIdent:
         case whichKeyword(it.sons[0].ident)
@@ -209,7 +209,7 @@ proc processMagic(c: PContext, n: PNode, s: PSym) =
   var v: string
   if n.sons[1].kind == nkIdent: v = n.sons[1].ident.s
   else: v = expectStrLit(c, n)
-  for m in countup(low(TMagic), high(TMagic)):
+  for m in low(TMagic) .. high(TMagic):
     if substr($m, 1) == v:
       s.magic = m
       break
@@ -350,7 +350,7 @@ proc pragmaToOptions(w: TSpecialWord): TOptions {.inline.} =
   of wMemTracker: {optMemTracker}
   of wByRef: {optByRef}
   of wImplicitStatic: {optImplicitStatic}
-  of wPatterns: {optPatterns}
+  of wPatterns, wTrMacros: {optTrMacros}
   else: {}
 
 proc processExperimental(c: PContext; n: PNode) =
@@ -423,7 +423,7 @@ proc processPush(c: PContext, n: PNode, start: int) =
   x.notes = c.config.notes
   x.features = c.features
   c.optionStack.add(x)
-  for i in countup(start, sonsLen(n) - 1):
+  for i in start ..< sonsLen(n):
     if not tryProcessOption(c, n.sons[i], c.config.options):
       # simply store it somewhere:
       if x.otherPragmas.isNil:
@@ -863,8 +863,6 @@ proc singlePragma(c: PContext, sym: PSym, n: PNode, i: var int,
         incl(sym.loc.flags, lfNoDecl)
         # implies nodecl, because otherwise header would not make sense
         if sym.loc.r == nil: sym.loc.r = rope(sym.name.s)
-      of wOverride:
-        sym.flags.incl sfOverriden
       of wNosideeffect:
         noVal(c, it)
         if sym != nil:
@@ -888,6 +886,8 @@ proc singlePragma(c: PContext, sym: PSym, n: PNode, i: var int,
         cppDefine(c.graph.config, sym.name.s)
         recordPragma(c, it, "cppdefine", sym.name.s)
         if sfFromGeneric notin sym.flags: markCompilerProc(c, sym)
+      of wNonReloadable:
+        sym.flags.incl sfNonReloadable
       of wProcVar:
         noVal(c, it)
         incl(sym.flags, sfProcvar)
@@ -931,7 +931,7 @@ proc singlePragma(c: PContext, sym: PSym, n: PNode, i: var int,
       of wAcyclic:
         noVal(c, it)
         if sym.typ == nil: invalidPragma(c, it)
-        else: incl(sym.typ.flags, tfAcyclic)
+        # now: ignored
       of wShallow:
         noVal(c, it)
         if sym.typ == nil: invalidPragma(c, it)
@@ -1011,7 +1011,7 @@ proc singlePragma(c: PContext, sym: PSym, n: PNode, i: var int,
       of wChecks, wObjChecks, wFieldChecks, wRangechecks, wBoundchecks,
          wOverflowchecks, wNilchecks, wAssertions, wWarnings, wHints,
          wLinedir, wOptimization, wMovechecks, wCallconv, wDebugger, wProfiler,
-         wFloatchecks, wNanChecks, wInfChecks, wPatterns:
+         wFloatchecks, wNanChecks, wInfChecks, wPatterns, wTrMacros:
         processOption(c, it, c.config.options)
       of wStacktrace, wLinetrace:
         if sym.kind in {skProc, skMethod, skConverter}:
@@ -1089,6 +1089,11 @@ proc singlePragma(c: PContext, sym: PSym, n: PNode, i: var int,
           invalidPragma(c, it)
         else:
           sym.flags.incl sfGoto
+      of wCursor:
+        if sym == nil or sym.kind notin {skVar, skLet}:
+          invalidPragma(c, it)
+        else:
+          sym.flags.incl sfCursor
       of wExportNims:
         if sym == nil: invalidPragma(c, it)
         else: magicsys.registerNimScriptSymbol(c.graph, sym)

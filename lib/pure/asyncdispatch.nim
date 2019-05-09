@@ -7,23 +7,6 @@
 #    distribution, for details about the copyright.
 #
 
-include "system/inclrtl"
-
-import os, tables, strutils, times, heapqueue, lists, options, asyncstreams
-import options, math
-import asyncfutures except callSoon
-
-import nativesockets, net, deques
-
-export Port, SocketFlag
-export asyncfutures except callSoon
-export asyncstreams
-
-#{.injectStmt: newGcInvariant().}
-
-## AsyncDispatch
-## *************
-##
 ## This module implements asynchronous IO. This includes a dispatcher,
 ## a ``Future`` type implementation, and an ``async`` macro which allows
 ## asynchronous code to be written in a synchronous style with the ``await``
@@ -82,7 +65,7 @@ export asyncstreams
 ## error), if there is no error however it returns the value of the future.
 ##
 ## Asynchronous procedures
-## -----------------------
+## =======================
 ##
 ## Asynchronous procedures remove the pain of working with callbacks. They do
 ## this by allowing you to write asynchronous code the same way as you would
@@ -116,7 +99,7 @@ export asyncstreams
 ## exceptions in async procs.
 ##
 ## Handling Exceptions
-## ~~~~~~~~~~~~~~~~~~~
+## -------------------
 ##
 ## The most reliable way to handle exceptions is to use ``yield`` on a future
 ## then check the future's ``failed`` property. For example:
@@ -142,7 +125,7 @@ export asyncstreams
 ##
 ##
 ## Discarding futures
-## ------------------
+## ==================
 ##
 ## Futures should **never** be discarded. This is because they may contain
 ## errors. If you do not care for the result of a Future then you should
@@ -151,23 +134,58 @@ export asyncstreams
 ## ``waitFor`` for that purpose.
 ##
 ## Examples
-## --------
+## ========
 ##
 ## For examples take a look at the documentation for the modules implementing
 ## asynchronous IO. A good place to start is the
 ## `asyncnet module <asyncnet.html>`_.
 ##
+## Investigating pending futures
+## =============================
+##
+## It's possible to get into a situation where an async proc, or more accurately
+## a ``Future[T]`` gets stuck and
+## never completes. This can happen for various reasons and can cause serious
+## memory leaks. When this occurs it's hard to identify the procedure that is
+## stuck.
+##
+## Thankfully there is a mechanism which tracks the count of each pending future.
+## All you need to do to enable it is compile with ``-d:futureLogging`` and
+## use the ``getFuturesInProgress`` procedure to get the list of pending futures
+## together with the stack traces to the moment of their creation.
+##
+## You may also find it useful to use this
+## `prometheus package <https://github.com/dom96/prometheus>`_ which will log
+## the pending futures into prometheus, allowing you to analyse them via a nice
+## graph.
+##
+##
+##
 ## Limitations/Bugs
-## ----------------
+## ================
 ##
 ## * The effect system (``raises: []``) does not work with async procedures.
+
+include "system/inclrtl"
+
+import os, tables, strutils, times, heapqueue, lists, options, asyncstreams
+import options, math
+import asyncfutures except callSoon
+
+import nativesockets, net, deques
+
+export Port, SocketFlag
+export asyncfutures except callSoon
+export asyncstreams
+
+#{.injectStmt: newGcInvariant().}
 
 # TODO: Check if yielded future is nil and throw a more meaningful exception
 
 type
   PDispatcherBase = ref object of RootRef
     timers*: HeapQueue[tuple[finishAt: float, fut: Future[void]]]
-    callbacks*: Deque[proc ()]
+    callbacks*: Deque[proc () {.gcsafe.}]
 
 proc processTimers(
   p: PDispatcherBase, didSomeWork: var bool
@@ -200,7 +218,9 @@ proc adjustTimeout(pollTimeout: int, nextTimer: Option[int]): int {.inline.} =
   if pollTimeout == -1: return
   result = min(pollTimeout, result)
 
-proc callSoon*(cbproc: proc ()) {.gcsafe.}
+proc callSoon*(cbproc: proc () {.gcsafe.}) {.gcsafe.}
+  ## Schedule `cbproc` to be called as soon as possible.
+  ## The callback is called when control returns to the event loop.
 
 proc initCallSoonProc =
   if asyncfutures.getCallSoonProc().isNil:
@@ -1806,9 +1826,7 @@ proc readAll*(future: FutureStream[string]): Future[string] {.async.} =
     else:
       break
 
-proc callSoon*(cbproc: proc ()) =
-  ## Schedule `cbproc` to be called as soon as possible.
-  ## The callback is called when control returns to the event loop.
+proc callSoon(cbproc: proc () {.gcsafe.}) =
   getGlobalDispatcher().callbacks.addLast(cbproc)
 
 proc runForever*() =

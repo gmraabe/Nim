@@ -12,48 +12,46 @@
 ## format, but much more powerful, as it is not a line based parser. String
 ## literals, raw string literals and triple quoted string literals are supported
 ## as in the Nim programming language.
-
-## This is an example of how a configuration file may look like:
+##
+## Example of how a configuration file may look like:
 ##
 ## .. include:: ../../doc/mytest.cfg
 ##     :literal:
 ##
-
-##[ Here is an example of how to use the configuration file parser:
-
-.. code-block:: nim
-
-    import
-      os, parsecfg, strutils, streams
-
-    var f = newFileStream(paramStr(1), fmRead)
-    if f != nil:
-      var p: CfgParser
-      open(p, f, paramStr(1))
-      while true:
-        var e = next(p)
-        case e.kind
-        of cfgEof: break
-        of cfgSectionStart:   ## a ``[section]`` has been parsed
-          echo("new section: " & e.section)
-        of cfgKeyValuePair:
-          echo("key-value-pair: " & e.key & ": " & e.value)
-        of cfgOption:
-          echo("command: " & e.key & ": " & e.value)
-        of cfgError:
-          echo(e.msg)
-      close(p)
-    else:
-      echo("cannot open: " & paramStr(1))
-
-]##
-
+## Here is an example of how to use the configuration file parser:
+##
+## .. code-block:: nim
+##
+##    import os, parsecfg, strutils, streams
+##
+##    var f = newFileStream(paramStr(1), fmRead)
+##    if f != nil:
+##      var p: CfgParser
+##      open(p, f, paramStr(1))
+##      while true:
+##        var e = next(p)
+##        case e.kind
+##        of cfgEof: break
+##        of cfgSectionStart:   ## a ``[section]`` has been parsed
+##          echo("new section: " & e.section)
+##        of cfgKeyValuePair:
+##          echo("key-value-pair: " & e.key & ": " & e.value)
+##        of cfgOption:
+##          echo("command: " & e.key & ": " & e.value)
+##        of cfgError:
+##          echo(e.msg)
+##      close(p)
+##    else:
+##      echo("cannot open: " & paramStr(1))
+##
+##
 ## Examples
-## --------
+## ========
 ##
-## This is an example of a configuration file.
+## Configuration file example
+## --------------------------
 ##
-## ::
+## .. code-block:: nim
 ##
 ##     charset = "utf-8"
 ##     [Package]
@@ -64,8 +62,8 @@
 ##     qq = "10214028"
 ##     email = "lihaifeng@wxm.com"
 ##
-## Creating a configuration file.
-## ==============================
+## Creating a configuration file
+## -----------------------------
 ## .. code-block:: nim
 ##
 ##     import parsecfg
@@ -78,8 +76,8 @@
 ##     dict.setSectionKey("Author","email","lihaifeng@wxm.com")
 ##     dict.writeConfig("config.ini")
 ##
-## Reading a configuration file.
-## =============================
+## Reading a configuration file
+## ----------------------------
 ## .. code-block:: nim
 ##
 ##     import parsecfg
@@ -92,8 +90,8 @@
 ##     var email = dict.getSectionValue("Author","email")
 ##     echo pname & "\n" & name & "\n" & qq & "\n" & email
 ##
-## Modifying a configuration file.
-## ===============================
+## Modifying a configuration file
+## ------------------------------
 ## .. code-block:: nim
 ##
 ##     import parsecfg
@@ -101,8 +99,8 @@
 ##     dict.setSectionKey("Author","name","lhf")
 ##     dict.writeConfig("config.ini")
 ##
-## Deleting a section key in a configuration file.
-## ===============================================
+## Deleting a section key in a configuration file
+## ----------------------------------------------
 ## .. code-block:: nim
 ##
 ##     import parsecfg
@@ -261,35 +259,32 @@ proc handleCRLF(c: var CfgParser, pos: int): int =
 
 proc getString(c: var CfgParser, tok: var Token, rawMode: bool) =
   var pos = c.bufpos + 1          # skip "
-  var buf = c.buf                 # put `buf` in a register
   tok.kind = tkSymbol
-  if (buf[pos] == '"') and (buf[pos + 1] == '"'):
+  if (c.buf[pos] == '"') and (c.buf[pos + 1] == '"'):
     # long string literal:
     inc(pos, 2)               # skip ""
                               # skip leading newline:
     pos = handleCRLF(c, pos)
-    buf = c.buf
     while true:
-      case buf[pos]
+      case c.buf[pos]
       of '"':
-        if (buf[pos + 1] == '"') and (buf[pos + 2] == '"'): break
+        if (c.buf[pos + 1] == '"') and (c.buf[pos + 2] == '"'): break
         add(tok.literal, '"')
         inc(pos)
       of '\c', '\L':
         pos = handleCRLF(c, pos)
-        buf = c.buf
         add(tok.literal, "\n")
       of lexbase.EndOfFile:
         tok.kind = tkInvalid
         break
       else:
-        add(tok.literal, buf[pos])
+        add(tok.literal, c.buf[pos])
         inc(pos)
     c.bufpos = pos + 3       # skip the three """
   else:
     # ordinary string literal
     while true:
-      var ch = buf[pos]
+      var ch = c.buf[pos]
       if ch == '"':
         inc(pos)              # skip '"'
         break
@@ -307,26 +302,23 @@ proc getString(c: var CfgParser, tok: var Token, rawMode: bool) =
 
 proc getSymbol(c: var CfgParser, tok: var Token) =
   var pos = c.bufpos
-  var buf = c.buf
   while true:
-    add(tok.literal, buf[pos])
+    add(tok.literal, c.buf[pos])
     inc(pos)
-    if not (buf[pos] in SymChars): break
+    if not (c.buf[pos] in SymChars): break
   c.bufpos = pos
   tok.kind = tkSymbol
 
 proc skip(c: var CfgParser) =
   var pos = c.bufpos
-  var buf = c.buf
   while true:
-    case buf[pos]
+    case c.buf[pos]
     of ' ', '\t':
       inc(pos)
     of '#', ';':
-      while not (buf[pos] in {'\c', '\L', lexbase.EndOfFile}): inc(pos)
+      while not (c.buf[pos] in {'\c', '\L', lexbase.EndOfFile}): inc(pos)
     of '\c', '\L':
       pos = handleCRLF(c, pos)
-      buf = c.buf
     else:
       break                   # EndOfFile also leaves the loop
   c.bufpos = pos
@@ -449,17 +441,17 @@ proc next*(c: var CfgParser): CfgEvent {.rtl, extern: "npc$1".} =
 
 # ---------------- Configuration file related operations ----------------
 type
-  Config* = OrderedTableRef[string, OrderedTableRef[string, string]]
+  Config* = OrderedTableRef[string, <//>OrderedTableRef[string, string]]
 
 proc newConfig*(): Config =
   ## Create a new configuration table.
   ## Useful when wanting to create a configuration file.
-  result = newOrderedTable[string, OrderedTableRef[string, string]]()
+  result = newOrderedTable[string, <//>OrderedTableRef[string, string]]()
 
-proc loadConfig*(stream: Stream, filename: string = "[stream]"): Config =
+proc loadConfig*(stream: Stream, filename: string = "[stream]"): <//>Config =
   ## Load the specified configuration from stream into a new Config instance.
   ## `filename` parameter is only used for nicer error messages.
-  var dict = newOrderedTable[string, OrderedTableRef[string, string]]()
+  var dict = newOrderedTable[string, <//>OrderedTableRef[string, string]]()
   var curSection = "" ## Current section,
                       ## the default value of the current section is "",
                       ## which means that the current section is a common
@@ -489,7 +481,7 @@ proc loadConfig*(stream: Stream, filename: string = "[stream]"): Config =
   close(p)
   result = dict
 
-proc loadConfig*(filename: string): Config =
+proc loadConfig*(filename: string): <//>Config =
   ## Load the specified configuration file into a new Config instance.
   let file = open(filename, fmRead)
   let fileStream = newFileStream(file)

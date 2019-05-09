@@ -10,8 +10,7 @@
 # This include file implements the semantic checking for magics.
 # included from sem.nim
 
-proc semAddr(c: PContext; n: PNode; isUnsafeAddr=false): PNode =
-  result = newNodeI(nkAddr, n.info)
+proc semAddrArg(c: PContext; n: PNode; isUnsafeAddr = false): PNode =
   let x = semExprWithType(c, n)
   if x.kind == nkSym:
     x.sym.flags.incl(sfAddrTaken)
@@ -22,8 +21,7 @@ proc semAddr(c: PContext; n: PNode; isUnsafeAddr=false): PNode =
       localError(c.config, n.info, errExprHasNoAddress)
     else:
       localError(c.config, n.info, errExprHasNoAddress & "; maybe use 'unsafeAddr'")
-  result.add x
-  result.typ = makePtrType(c, x.typ)
+  result = x
 
 proc semTypeOf(c: PContext; n: PNode): PNode =
   var m = BiggestInt 1 # typeOfIter
@@ -324,6 +322,39 @@ proc semOf(c: PContext, n: PNode): PNode =
   n.typ = getSysType(c.graph, n.info, tyBool)
   result = n
 
+proc semUnown(c: PContext; n: PNode): PNode =
+  proc unownedType(c: PContext; t: PType): PType =
+    case t.kind
+    of tyTuple:
+      var elems = newSeq[PType](t.len)
+      var someChange = false
+      for i in 0..<t.len:
+        elems[i] = unownedType(c, t[i])
+        if elems[i] != t[i]: someChange = true
+      if someChange:
+        result = newType(tyTuple, t.owner)
+        # we have to use 'rawAddSon' here so that type flags are
+        # properly computed:
+        for e in elems: result.rawAddSon(e)
+      else:
+        result = t
+    of tyOwned: result = t.sons[0]
+    of tySequence, tyOpenArray, tyArray, tyVarargs, tyVar, tyLent,
+       tyGenericInst, tyAlias:
+      let L = t.len-1
+      let b = unownedType(c, t[L])
+      if b != t[L]:
+        result = copyType(t, t.owner, keepId = false)
+        result[L] = b
+        result.flags.excl tfHasOwned
+      else:
+        result = t
+    else:
+      result = t
+
+  result = copyTree(n[1])
+  result.typ = unownedType(c, result.typ)
+
 proc magicsAfterOverloadResolution(c: PContext, n: PNode,
                                    flags: TExprFlags): PNode =
   ## This is the preferred code point to implement magics.
@@ -335,7 +366,9 @@ proc magicsAfterOverloadResolution(c: PContext, n: PNode,
   case n[0].sym.magic
   of mAddr:
     checkSonsLen(n, 2, c.config)
-    result = semAddr(c, n.sons[1], n[0].sym.name.s == "unsafeAddr")
+    result = n
+    result[1] = semAddrArg(c, n[1], n[0].sym.name.s == "unsafeAddr")
+    result.typ = makePtrType(c, result[1].typ)
   of mTypeOf:
     result = semTypeOf(c, n)
   of mSizeOf:
@@ -428,4 +461,11 @@ proc magicsAfterOverloadResolution(c: PContext, n: PNode,
     if n[^1].kind == nkSym and n[^1].sym.kind notin {skProc, skFunc}:
       localError(c.config, n.info, "finalizer must be a direct reference to a procedure")
     result = n
+  of mDestroy:
+    result = n
+    let t = n[1].typ.skipTypes(abstractVar)
+    if t.destructor != nil:
+      result.sons[0] = newSymNode(t.destructor)
+  of mUnown:
+    result = semUnown(c, n)
   else: result = n

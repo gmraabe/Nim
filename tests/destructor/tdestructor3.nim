@@ -4,9 +4,9 @@ destroy
 destroy
 5
 123
-destroy Foo: 5
-destroy Foo: 123'''
-  cmd: '''nim c --newruntime $file'''
+destroy Foo: 123
+destroy Foo: 5'''
+joinable: false
 """
 
 # bug #2821

@@ -21,7 +21,7 @@
 import
   intsets, strutils, options, ast, astalgo, trees, treetab, msgs, lookups,
   idents, renderer, types, passes, semfold, magicsys, cgmeth,
-  sempass2, lowerings, destroyer, liftlocals,
+  sempass2, lowerings, injectdestructors, liftlocals,
   modulegraphs, lineinfos
 
 proc transformBody*(g: ModuleGraph, prc: PSym, cache = true;
@@ -119,7 +119,7 @@ proc transform(c: PTransf, n: PNode): PTransNode
 
 proc transformSons(c: PTransf, n: PNode): PTransNode =
   result = newTransNode(n)
-  for i in countup(0, sonsLen(n)-1):
+  for i in 0 ..< sonsLen(n):
     result[i] = transform(c, n.sons[i])
 
 proc newAsgnStmt(c: PTransf, kind: TNodeKind, le: PNode, ri: PTransNode): PTransNode =
@@ -176,7 +176,7 @@ proc freshVar(c: PTransf; v: PSym): PNode =
 
 proc transformVarSection(c: PTransf, v: PNode): PTransNode =
   result = newTransNode(v)
-  for i in countup(0, sonsLen(v)-1):
+  for i in 0 ..< sonsLen(v):
     var it = v.sons[i]
     if it.kind == nkCommentStmt:
       result[i] = PTransNode(it)
@@ -203,7 +203,7 @@ proc transformVarSection(c: PTransf, v: PNode): PTransNode =
         internalError(c.graph.config, it.info, "transformVarSection: not nkVarTuple")
       var L = sonsLen(it)
       var defs = newTransNode(it.kind, it.info, L)
-      for j in countup(0, L-3):
+      for j in 0 .. L-3:
         if it[j].kind == nkSym:
           let x = freshVar(c, it.sons[j].sym)
           idNodeTablePut(c.transCon.mapping, it.sons[j].sym, x)
@@ -219,7 +219,7 @@ proc transformConstSection(c: PTransf, v: PNode): PTransNode =
   result = PTransNode(v)
   when false:
     result = newTransNode(v)
-    for i in countup(0, sonsLen(v)-1):
+    for i in 0 ..< sonsLen(v):
       var it = v.sons[i]
       if it.kind == nkCommentStmt:
         result[i] = PTransNode(it)
@@ -236,7 +236,7 @@ proc hasContinue(n: PNode): bool =
   of nkEmpty..nkNilLit, nkForStmt, nkParForStmt, nkWhileStmt: discard
   of nkContinueStmt: result = true
   else:
-    for i in countup(0, sonsLen(n) - 1):
+    for i in 0 ..< sonsLen(n):
       if hasContinue(n.sons[i]): return true
 
 proc newLabel(c: PTransf, n: PNode): PSym =
@@ -318,7 +318,7 @@ proc introduceNewLocalVars(c: PTransf, n: PNode): PTransNode =
     return PTransNode(n)
   else:
     result = newTransNode(n)
-    for i in countup(0, sonsLen(n)-1):
+    for i in 0 ..< sonsLen(n):
       result[i] = introduceNewLocalVars(c, n.sons[i])
 
 proc transformAsgn(c: PTransf, n: PNode): PTransNode =
@@ -375,7 +375,7 @@ proc transformYield(c: PTransf, n: PNode): PTransNode =
       c.transCon.forStmt.len != 3:
     e = skipConv(e)
     if e.kind in {nkPar, nkTupleConstr}:
-      for i in countup(0, sonsLen(e) - 1):
+      for i in 0 ..< sonsLen(e):
         var v = e.sons[i]
         if v.kind == nkExprColonExpr: v = v.sons[1]
         if c.transCon.forStmt[i].kind == nkVarTuple:
@@ -390,7 +390,7 @@ proc transformYield(c: PTransf, n: PNode): PTransNode =
     else:
       # Unpack the tuple into the loop variables
       # XXX: BUG: what if `n` is an expression with side-effects?
-      for i in countup(0, sonsLen(c.transCon.forStmt) - 3):
+      for i in 0 .. sonsLen(c.transCon.forStmt) - 3:
         let lhs = c.transCon.forStmt.sons[i]
         let rhs = transform(c, newTupleAccess(c.graph, e, i))
         add(result, asgnTo(lhs, rhs))
@@ -560,6 +560,7 @@ type
 proc putArgInto(arg: PNode, formal: PType): TPutArgInto =
   # This analyses how to treat the mapping "formal <-> arg" in an
   # inline context.
+  if formal.kind == tyTypeDesc: return paDirectMapping
   if skipTypes(formal, abstractInst).kind in {tyOpenArray, tyVarargs}:
     if arg.kind == nkStmtListExpr:
       return paComplexOpenarray
@@ -570,7 +571,7 @@ proc putArgInto(arg: PNode, formal: PType): TPutArgInto =
     result = paDirectMapping
   of nkPar, nkTupleConstr, nkCurly, nkBracket:
     result = paFastAsgn
-    for i in countup(0, sonsLen(arg) - 1):
+    for i in 0 ..< sonsLen(arg):
       if putArgInto(arg.sons[i], formal) != paDirectMapping: return
     result = paDirectMapping
   else:
@@ -620,7 +621,7 @@ proc transformFor(c: PTransf, n: PNode): PTransNode =
   discard c.breakSyms.pop
 
   var v = newNodeI(nkVarSection, n.info)
-  for i in countup(0, length - 3):
+  for i in 0 .. length - 3:
     if n[i].kind == nkVarTuple:
       for j in 0 ..< sonsLen(n[i])-1:
         addVar(v, copyTree(n[i][j])) # declare new vars
@@ -638,7 +639,7 @@ proc transformFor(c: PTransf, n: PNode): PTransNode =
   if iter.kind != skIterator: return result
   # generate access statements for the parameters (unless they are constant)
   pushTransCon(c, newC)
-  for i in countup(1, sonsLen(call) - 1):
+  for i in 1 ..< sonsLen(call):
     var arg = transform(c, call.sons[i]).PNode
     let ff = skipTypes(iter.typ, abstractInst)
     # can happen for 'nim check':
@@ -648,8 +649,14 @@ proc transformFor(c: PTransf, n: PNode): PTransNode =
     of paDirectMapping:
       idNodeTablePut(newC.mapping, formal, arg)
     of paFastAsgn:
+      var t = formal.typ
+      if formal.ast != nil and formal.ast.typ.destructor != nil and t.destructor == nil:
+        t = formal.ast.typ # better use the type that actually has a destructor.
+      elif t.destructor == nil and arg.typ.destructor != nil:
+        t = arg.typ
       # generate a temporary and produce an assignment statement:
-      var temp = newTemp(c, formal.typ, formal.info)
+      var temp = newTemp(c, t, formal.info)
+      #temp.sym.flags.incl sfCursor
       addVar(v, temp)
       add(stmtList, newAsgnStmt(c, nkFastAsgn, temp, arg.PTransNode))
       idNodeTablePut(newC.mapping, formal, temp)
@@ -730,7 +737,7 @@ proc flattenTreeAux(d, a: PNode, op: PSym) =
   let op2 = getMergeOp(a)
   if op2 != nil and
       (op2.id == op.id or op.magic != mNone and op2.magic == op.magic):
-    for i in countup(1, sonsLen(a)-1): flattenTreeAux(d, a.sons[i], op)
+    for i in 1 ..< sonsLen(a): flattenTreeAux(d, a.sons[i], op)
   else:
     addSon(d, copyTree(a))
 
@@ -762,12 +769,18 @@ proc transformCall(c: PTransf, n: PNode): PTransNode =
           inc(j)
       add(result, a.PTransNode)
     if len(result) == 2: result = result[1]
+  elif magic == mAddr:
+    result = newTransNode(nkAddr, n, 1)
+    result[0] = n[1].PTransNode
+    result = transformAddrDeref(c, result.PNode, nkDerefExpr, nkHiddenDeref)
   elif magic in {mNBindSym, mTypeOf, mRunnableExamples}:
     # for bindSym(myconst) we MUST NOT perform constant folding:
     result = n.PTransNode
   elif magic == mProcCall:
     # but do not change to its dispatcher:
     result = transformSons(c, n[1])
+  elif magic == mStrToStr:
+    result = transform(c, n[1])
   else:
     let s = transformSons(c, n).PNode
     # bugfix: check after 'transformSons' if it's still a method call:
@@ -814,8 +827,9 @@ proc transformExceptBranch(c: PTransf, n: PNode): PTransNode =
 proc dontInlineConstant(orig, cnst: PNode): bool {.inline.} =
   # symbols that expand to a complex constant (array, etc.) should not be
   # inlined, unless it's the empty array:
-  result = orig.kind == nkSym and cnst.kind in {nkCurly, nkPar, nkTupleConstr, nkBracket} and
-      cnst.len != 0
+  result = orig.kind == nkSym and
+           cnst.kind in {nkCurly, nkPar, nkTupleConstr, nkBracket} and
+           cnst.len != 0
 
 proc commonOptimizations*(g: ModuleGraph; c: PSym, n: PNode): PNode =
   result = n
@@ -892,7 +906,8 @@ proc transform(c: PTransf, n: PNode): PTransNode =
                   nkBlockStmt, nkBlockExpr}:
       oldDeferAnchor = c.deferAnchor
       c.deferAnchor = n
-  if n.typ != nil and tfHasAsgn in n.typ.flags:
+  if (n.typ != nil and tfHasAsgn in n.typ.flags) or
+      optNimV2 in c.graph.config.globalOptions:
     c.needsDestroyPass = true
   case n.kind
   of nkSym:
@@ -997,8 +1012,8 @@ proc transform(c: PTransf, n: PNode): PTransNode =
       result = transformYield(c, n)
     else:
       result = transformSons(c, n)
-  #of nkAsgn:
-  #  result = transformAsgn(c, n)
+  of nkAsgn:
+    result = transformAsgn(c, n)
   of nkIdentDefs, nkConstDef:
     result = PTransNode(n)
     result[0] = transform(c, n[0])
@@ -1023,10 +1038,15 @@ proc transform(c: PTransf, n: PNode): PTransNode =
   when false:
     if oldDeferAnchor != nil: c.deferAnchor = oldDeferAnchor
 
-  var cnst = getConstExpr(c.module, PNode(result), c.graph)
-  # we inline constants if they are not complex constants:
-  if cnst != nil and not dontInlineConstant(n, cnst):
-    result = PTransNode(cnst) # do not miss an optimization
+  # Constants can be inlined here, but only if they cannot result in a cast
+  # in the back-end (e.g. var p: pointer = someProc)
+  let exprIsPointerCast = n.kind in {nkCast, nkConv, nkHiddenStdConv} and
+                          n.typ.kind == tyPointer
+  if not exprIsPointerCast:
+    var cnst = getConstExpr(c.module, PNode(result), c.graph)
+    # we inline constants if they are not complex constants:
+    if cnst != nil and not dontInlineConstant(n, cnst):
+      result = PTransNode(cnst) # do not miss an optimization
 
 proc processTransf(c: PTransf, n: PNode, owner: PSym): PNode =
   # Note: For interactive mode we cannot call 'passes.skipCodegen' and skip
@@ -1098,7 +1118,7 @@ proc transformBody*(g: ModuleGraph, prc: PSym, cache = true;
     prc.transformedBody = newNode(nkEmpty) # protects from recursion
     var c = openTransf(g, prc.getModule, "")
     c.noDestructors = noDestructors
-    result = liftLambdas(g, prc, prc.ast[bodyPos], c.tooEarly)
+    result = liftLambdas(g, prc, prc.ast[bodyPos], c.tooEarly, noDestructors)
     result = processTransf(c, result, prc)
     liftDefer(c, result)
     result = liftLocalsIfRequested(prc, result, g.cache, g.config)

@@ -1,5 +1,10 @@
 discard """
-  output: "OK"
+  output: '''
+body executed
+body executed
+OK
+macros api OK
+'''
 """
 
 type
@@ -138,15 +143,41 @@ type
     ValueA
     ValueB
 
-template testinstance(body: untyped): untyped =
-  block:
-    {.pragma: objectconfig.}
-    body
 
-  block:
-    {.pragma: objectconfig, packed.}
-    body
+proc transformObjectconfigPacked(arg: NimNode): NimNode =
+  let debug = arg.kind == nnkPragmaExpr
 
+  if arg.eqIdent("objectconfig"):
+    result = ident"packed"
+  else:
+    result = copyNimNode(arg)
+    for child in arg:
+      result.add transformObjectconfigPacked(child)
+
+proc removeObjectconfig(arg: NimNode): NimNode =
+  if arg.kind == nnkPragmaExpr and arg[1][0].eqIdent "objectconfig":
+    result = arg[0]
+  else:
+    result = copyNimNode(arg)
+    for child in arg:
+      result.add removeObjectconfig(child)
+
+macro testinstance(body: untyped): untyped =
+  let bodyPure = removeObjectconfig(body)
+  let bodyPacked = transformObjectconfigPacked(body)
+
+  result = quote do:
+    proc pureblock(): void =
+      const usePacked {.inject.} = false
+      `bodyPure`
+
+    pureblock()
+
+    proc packedblock(): void =
+      const usePacked {.inject.} = true
+      `bodyPacked`
+
+    packedblock()
 
 proc testPrimitiveTypes(): void =
   testAlign(pointer)
@@ -284,13 +315,6 @@ testinstance:
       a: int32
       b: T
 
-    #Float128Test = object
-    #  a: byte
-    #  b: float128
-
-    #Bazang = object of RootObj
-    #  a: float128
-
   const trivialSize = sizeof(TrivialType) # needs to be able to evaluate at compile time
 
   proc main(): void =
@@ -314,8 +338,13 @@ testinstance:
       eoa: EnumObjectA
       eob: EnumObjectB
 
-
     testAlign(SimpleAlignment)
+
+    # sanity check to ensure both branches are actually executed
+    when usePacked:
+      doAssert sizeof(SimpleAlignment) == 10
+    else:
+      doAssert sizeof(SimpleAlignment) > 10
 
     testSizeAlignOf(t,a,b,c,d,e,f,g,ro,go, e1, e2, e4, e8, eoa, eob)
 
@@ -380,6 +409,9 @@ testinstance:
     testOffsetOf(RecursiveStuff, d1)
     testOffsetOf(RecursiveStuff, d2)
 
+    echo "body executed" # sanity check to ensure this logic isn't skipped entirely
+
+
   main()
 
 {.emit: """/*TYPESECTION*/
@@ -401,7 +433,7 @@ assert sizeof(Bar) == 12
 type
   A = int8        # change to int16 and get sizeof(C)==6
   B = int16
-  C = object {.packed.}
+  C {.packed.} = object
     d {.bitsize:  1.}: A
     e {.bitsize:  7.}: A
     f {.bitsize: 16.}: B
@@ -410,7 +442,7 @@ assert sizeof(C) == 3
 
 
 type
-  MixedBitsize = object {.packed.}
+  MixedBitsize {.packed.} = object
     a: uint32
     b {.bitsize:  8.}: uint8
     c {.bitsize:  1.}: uint8
@@ -419,6 +451,14 @@ type
     f: uint32
 
 doAssert sizeof(MixedBitsize) == 12
+
+
+type
+  MyUnionType {.union.} = object
+    a: int32
+    b: float32
+
+doAssert sizeof(MyUnionType) == 4
 
 ##########################################
 # bug #9794
@@ -446,3 +486,53 @@ if failed:
   quit("FAIL")
 else:
   echo "OK"
+
+##########################################
+# sizeof macros API
+##########################################
+
+import macros
+
+type
+  Vec2f = object
+    x,y: float32
+
+  Vec4f = object
+    x,y,z,w: float32
+
+  # this type is constructed to have no platform depended alignment.
+  ParticleDataA = object
+    pos, vel: Vec2f
+    birthday: float32
+    padding: float32
+    moreStuff: Vec4f
+
+const expected = [
+  # name size align offset
+  ("pos", 8, 4, 0),
+  ("vel", 8, 4, 8),
+  ("birthday", 4, 4, 16),
+  ("padding", 4, 4, 20),
+  ("moreStuff", 16, 4, 24)
+]
+
+macro typeProcessing(arg: typed): untyped =
+  let recList = arg.getTypeImpl[2]
+  recList.expectKind nnkRecList
+  for i, identDefs in recList:
+    identDefs.expectKind nnkIdentDefs
+    identDefs.expectLen 3
+    let sym = identDefs[0]
+    sym.expectKind nnkSym
+    doAssert expected[i][0] == sym.strVal
+    doAssert expected[i][1] == getSize(sym)
+    doAssert expected[i][2] == getAlign(sym)
+    doAssert expected[i][3] == getOffset(sym)
+
+  result = newCall(bindSym"echo", newLit("macros api OK"))
+
+proc main() =
+  var mylocal: ParticleDataA
+  typeProcessing(mylocal)
+
+main()

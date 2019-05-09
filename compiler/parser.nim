@@ -265,7 +265,7 @@ proc checkBinary(p: TParser) {.inline.} =
   ## Check if the current parser token is a binary operator.
   # we don't check '..' here as that's too annoying
   if p.tok.tokType == tkOpr:
-    if p.tok.strongSpaceB > 0 and p.tok.strongSpaceA != p.tok.strongSpaceB:
+    if p.tok.strongSpaceB > 0 and p.tok.strongSpaceA == 0:
       parMessage(p, warnInconsistentSpacing, prettyTok(p.tok))
 
 #| module = stmt ^* (';' / IND{=})
@@ -399,7 +399,8 @@ proc exprList(p: var TParser, endTok: TTokType, result: PNode) =
 proc exprColonEqExprListAux(p: var TParser, endTok: TTokType, result: PNode) =
   assert(endTok in {tkCurlyRi, tkCurlyDotRi, tkBracketRi, tkParRi})
   getTok(p)
-  optInd(p, result)
+  flexComment(p, result)
+  optPar(p)
   # progress guaranteed
   while p.tok.tokType != endTok and p.tok.tokType != tkEof:
     var a = exprColonEqExpr(p)
@@ -806,7 +807,8 @@ proc parseOperators(p: var TParser, headNode: PNode,
     var a = newNodeP(nkInfix, p)
     var opNode = newIdentNodeP(p.tok.ident, p) # skip operator:
     getTok(p)
-    optInd(p, a)
+    flexComment(p, a)
+    optPar(p)
     # read sub-expression with higher priority:
     var b = simpleExprAux(p, opPrec + leftAssoc, modeB)
     addSon(a, opNode)
@@ -1109,6 +1111,8 @@ proc parseProcExpr(p: var TParser; isExpr: bool; kind: TNodeKind): PNode =
     result = newNodeI(nkProcTy, info)
     if hasSignature:
       addSon(result, params)
+      if kind == nkFuncDef:
+        parMessage(p, "func keyword is not allowed in type descriptions, use proc with {.noSideEffect.} pragma instead")
       addSon(result, pragmas)
 
 proc isExprStart(p: TParser): bool =
@@ -2083,7 +2087,9 @@ proc parseConstant(p: var TParser): PNode =
       addSon(result, p.emptyNode)
   eat(p, tkEquals)
   optInd(p, result)
+  #addSon(result, parseStmtListExpr(p))
   addSon(result, parseExpr(p))
+  result[^1] = postExprBlocks(p, result[^1])
   indAndComment(p, result)
 
 proc parseBind(p: var TParser, k: TNodeKind): PNode =

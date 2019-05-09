@@ -157,7 +157,7 @@ proc presentFailedCandidates(c: PContext, n: PNode, errors: CandidateErrors):
   for err in errors:
     var errProto = ""
     let n = err.sym.typ.n
-    for i in countup(1, n.len - 1):
+    for i in 1 ..< n.len:
       var p = n.sons[i]
       if p.kind == nkSym:
         add(errProto, typeToString(p.sym.typ, preferName))
@@ -396,7 +396,7 @@ proc resolveOverloads(c: PContext, n, orig: PNode,
     elif c.config.errorCounter == 0:
       # don't cascade errors
       var args = "("
-      for i in countup(1, sonsLen(n) - 1):
+      for i in 1 ..< sonsLen(n):
         if i > 1: add(args, ", ")
         add(args, typeToString(n.sons[i].typ))
       add(args, ")")
@@ -482,6 +482,7 @@ proc semResolvedCall(c: PContext, x: TCandidate,
     result.sons[0] = newSymNode(finalCallee, getCallLineInfo(result.sons[0]))
     if containsGenericType(result.typ) or x.fauxMatch == tyUnknown:
       result.typ = newTypeS(x.fauxMatch, c)
+      if result.typ.kind == tyError: incl result.typ.flags, tfCheckedForDestructor
     return
   let gp = finalCallee.ast.sons[genericParamsPos]
   if gp.kind != nkEmpty:
@@ -612,7 +613,7 @@ proc explicitGenericInstantiation(c: PContext, n: PNode, s: PSym): PNode =
     # XXX I think this could be improved by reusing sigmatch.paramTypesMatch.
     # It's good enough for now.
     result = newNodeI(a.kind, getCallLineInfo(n))
-    for i in countup(0, len(a)-1):
+    for i in 0 ..< len(a):
       var candidate = a.sons[i].sym
       if candidate.kind in {skProc, skMethod, skConverter,
                             skFunc, skIterator}:

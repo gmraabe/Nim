@@ -14,25 +14,18 @@ var
   errorMessageWriter*: (proc(msg: string) {.tags: [WriteIOEffect], benign,
                                             nimcall.})
     ## Function that will be called
-    ## instead of stdmsg.write when printing stacktrace.
+    ## instead of `stdmsg.write` when printing stacktrace.
     ## Unstable API.
-
-proc c_fwrite(buf: pointer, size, n: csize, f: CFilePtr): cint {.
-  importc: "fwrite", header: "<stdio.h>".}
-
-proc rawWrite(f: CFilePtr, s: string|cstring) =
-  # we cannot throw an exception here!
-  discard c_fwrite(cstring(s), 1, s.len, f)
 
 when not defined(windows) or not defined(guiapp):
   proc writeToStdErr(msg: cstring) = rawWrite(cstderr, msg)
 
 else:
-  proc MessageBoxA(hWnd: cint, lpText, lpCaption: cstring, uType: int): int32 {.
+  proc MessageBoxA(hWnd: pointer, lpText, lpCaption: cstring, uType: int): int32 {.
     header: "<windows.h>", nodecl.}
 
   proc writeToStdErr(msg: cstring) =
-    discard MessageBoxA(0, msg, nil, 0)
+    discard MessageBoxA(nil, msg, nil, 0)
 
 proc showErrorMessage(data: cstring) {.gcsafe.} =
   if errorMessageWriter != nil:
@@ -45,10 +38,10 @@ proc showErrorMessage(data: cstring) {.gcsafe.} =
       writeToStdErr(data)
 
 proc quitOrDebug() {.inline.} =
-  when not defined(endb):
-    quit(1)
-  else:
+  when defined(endb):
     endbStep() # call the debugger
+  else:
+    quit(1)
 
 proc chckIndx(i, a, b: int): int {.inline, compilerproc, benign.}
 proc chckRange(i, a, b: int): int {.inline, compilerproc, benign.}
@@ -331,8 +324,9 @@ else:
   proc stackTraceAvailable*(): bool = result = false
 
 var onUnhandledException*: (proc (errorMsg: string) {.
-  nimcall.}) ## set this error \
+  nimcall.}) ## Set this error \
   ## handler to override the existing behaviour on an unhandled exception.
+  ##
   ## The default is to write a stacktrace to ``stderr`` and then call ``quit(1)``.
   ## Unstable API.
 
@@ -451,6 +445,12 @@ proc getStackTraceEntries*(e: ref Exception): seq[StackTraceEntry] =
   else:
     result = move(e.trace)
 
+proc getStackTraceEntries*(): seq[StackTraceEntry] =
+  ## Returns the stack trace entries for the current stack trace.
+  ## This is not yet available for the JS backend.
+  when hasSomeStackTrace:
+    rawWriteStackTrace(result)
+
 const nimCallDepthLimit {.intdefine.} = 2000
 
 proc callDepthLimitReached() {.noinline.} =
@@ -474,19 +474,36 @@ when defined(endb):
 when defined(cpp) and appType != "lib" and
     not defined(js) and not defined(nimscript) and
     hostOS != "standalone" and not defined(noCppExceptions):
+      
+  type 
+    StdException {.importcpp: "std::exception", header: "<exception>".} = object
+      
+  proc what(ex: StdException): cstring {.importcpp: "((char *)#.what())".}
+
   proc setTerminate(handler: proc() {.noconv.})
     {.importc: "std::set_terminate", header: "<exception>".}
+
   setTerminate proc() {.noconv.} =
     # Remove ourself as a handler, reinstalling the default handler.
     setTerminate(nil)
 
+    var msg = "Unknown error in unexpected exception handler"
+    try:
+      raise
+    except Exception:
+      msg = currException.getStackTrace() & "Error: unhandled exception: " &
+        currException.msg & " [" & $currException.name & "]"
+    except StdException as e:
+      msg = "Error: unhandled cpp exception: " & $e.what()
+    except:
+      msg = "Error: unhandled unknown cpp exception"
+      
     when defined(genode):
       # stderr not available by default, use the LOG session
-      echo currException.getStackTrace() & "Error: unhandled exception: " &
-              currException.msg & " [" & $currException.name & "]\n"
+      echo msg
     else:
-      writeToStdErr currException.getStackTrace() & "Error: unhandled exception: " &
-              currException.msg & " [" & $currException.name & "]\n"
+      writeToStdErr msg & "\n"
+
     quit 1
 
 when not defined(noSignalHandler) and not defined(useNimRtl):

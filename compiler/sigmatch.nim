@@ -295,7 +295,7 @@ proc argTypeToString(arg: PNode; prefer: TPreferedDesc): string =
 proc describeArgs*(c: PContext, n: PNode, startIdx = 1;
                    prefer: TPreferedDesc = preferName): string =
   result = ""
-  for i in countup(startIdx, n.len - 1):
+  for i in startIdx ..< n.len:
     var arg = n.sons[i]
     if n.sons[i].kind == nkExprEqExpr:
       add(result, renderTree(n.sons[i].sons[0]))
@@ -435,7 +435,7 @@ proc handleFloatRange(f, a: PType): TTypeRelation =
 proc genericParamPut(c: var TCandidate; last, fGenericOrigin: PType) =
   if fGenericOrigin != nil and last.kind == tyGenericInst and
      last.len-1 == fGenericOrigin.len:
-   for i in countup(1, sonsLen(fGenericOrigin) - 1):
+   for i in 1 ..< sonsLen(fGenericOrigin):
      let x = PType(idTableGet(c.bindings, fGenericOrigin.sons[i]))
      if x == nil:
        put(c, fGenericOrigin.sons[i], last.sons[i])
@@ -517,12 +517,12 @@ proc recordRel(c: var TCandidate, f, a: PType): TTypeRelation =
     result = isEqual
     let firstField = if f.kind == tyTuple: 0
                      else: 1
-    for i in countup(firstField, sonsLen(f) - 1):
+    for i in firstField ..< sonsLen(f):
       var m = typeRel(c, f.sons[i], a.sons[i])
       if m < isSubtype: return isNone
       result = minRel(result, m)
     if f.n != nil and a.n != nil:
-      for i in countup(0, sonsLen(f.n) - 1):
+      for i in 0 ..< sonsLen(f.n):
         # check field names:
         if f.n.sons[i].kind != nkSym: return isNone
         elif a.n.sons[i].kind != nkSym: return isNone
@@ -1484,7 +1484,7 @@ proc typeRelImpl(c: var TCandidate, f, aOrig: PType,
     elif x.kind == tyGenericInst and
           ((f.sons[0] == x.sons[0]) or isGenericSubType(c, x, f, depth)) and
           (sonsLen(x) - 1 == sonsLen(f)):
-      for i in countup(1, sonsLen(f) - 1):
+      for i in 1 ..< sonsLen(f):
         if x.sons[i].kind == tyGenericParam:
           internalError(c.c.graph.config, "wrong instantiated type!")
         elif typeRel(c, f.sons[i], x.sons[i]) <= isSubtype:
@@ -1513,7 +1513,7 @@ proc typeRelImpl(c: var TCandidate, f, aOrig: PType,
         # var it1 = internalFind(root, 312) # cannot instantiate: 'D'
         #
         # we steal the generic parameters from the tyGenericBody:
-        for i in countup(1, sonsLen(f) - 1):
+        for i in 1 ..< sonsLen(f):
           let x = PType(idTableGet(c.bindings, genericBody.sons[i-1]))
           if x == nil:
             discard "maybe fine (for eg. a==tyNil)"
@@ -1584,7 +1584,7 @@ proc typeRelImpl(c: var TCandidate, f, aOrig: PType,
     considerPreviousT:
       let targetKind = f.sons[0].kind
       let effectiveArgType = a.skipTypes({tyRange, tyGenericInst,
-                                          tyBuiltInTypeClass, tyAlias, tySink})
+                                          tyBuiltInTypeClass, tyAlias, tySink, tyOwned})
       let typeClassMatches = targetKind == effectiveArgType.kind and
                              not effectiveArgType.isEmptyContainer
       if typeClassMatches or
@@ -1830,7 +1830,7 @@ proc implicitConv(kind: TNodeKind, f: PType, arg: PNode, m: TCandidate,
 proc userConvMatch(c: PContext, m: var TCandidate, f, a: PType,
                    arg: PNode): PNode =
   result = nil
-  for i in countup(0, len(c.converters) - 1):
+  for i in 0 ..< len(c.converters):
     var src = c.converters[i].typ.sons[1]
     var dest = c.converters[i].typ.sons[0]
     # for generic type converters we need to check 'src <- a' before
@@ -2092,14 +2092,21 @@ proc paramTypesMatchAux(m: var TCandidate, f, a: PType,
         result = localConvMatch(c, m, f, a, arg)
       else:
         r = typeRel(m, base(f), a)
-        if r >= isGeneric:
+        case r
+        of isGeneric:
           inc(m.convMatches)
           result = copyTree(arg)
-          if r == isGeneric:
-            result.typ = getInstantiatedType(c, arg, m, base(f))
+          result.typ = getInstantiatedType(c, arg, m, base(f))
           m.baseTypeMatch = true
-        # bug #4799, varargs accepting subtype relation object
-        elif r == isSubtype:
+        of isFromIntLit:
+          inc(m.intConvMatches, 256)
+          result = implicitConv(nkHiddenStdConv, f[0], arg, m, c)
+          m.baseTypeMatch = true
+        of isEqual:
+          inc(m.convMatches)
+          result = copyTree(arg)
+          m.baseTypeMatch = true
+        of isSubtype: # bug #4799, varargs accepting subtype relation object
           inc(m.subtypeMatches)
           if base(f).kind == tyTypeDesc:
             result = arg

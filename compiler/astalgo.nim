@@ -152,14 +152,14 @@ proc lookupInRecord(n: PNode, field: PIdent): PSym =
   result = nil
   case n.kind
   of nkRecList:
-    for i in countup(0, sonsLen(n) - 1):
+    for i in 0 ..< sonsLen(n):
       result = lookupInRecord(n.sons[i], field)
       if result != nil: return
   of nkRecCase:
     if (n.sons[0].kind != nkSym): return nil
     result = lookupInRecord(n.sons[0], field)
     if result != nil: return
-    for i in countup(1, sonsLen(n) - 1):
+    for i in 1 ..< sonsLen(n):
       case n.sons[i].kind
       of nkOfBranch, nkElse:
         result = lookupInRecord(lastSon(n.sons[i]), field)
@@ -175,7 +175,7 @@ proc getModule*(s: PSym): PSym =
   while result != nil and result.kind != skModule: result = result.owner
 
 proc getSymFromList(list: PNode, ident: PIdent, start: int = 0): PSym =
-  for i in countup(start, sonsLen(list) - 1):
+  for i in start ..< sonsLen(list):
     if list.sons[i].kind == nkSym:
       result = list.sons[i].sym
       if result.name.id == ident.id: return
@@ -281,7 +281,7 @@ proc typeToYamlAux(conf: ConfigRef; n: PType, marker: var IntSet, indent: int,
   else:
     if sonsLen(n) > 0:
       sonsRope = rope("[")
-      for i in countup(0, sonsLen(n) - 1):
+      for i in 0 ..< sonsLen(n):
         if i > 0: add(sonsRope, ",")
         addf(sonsRope, "$N$1$2", [rspaces(indent + 4), typeToYamlAux(conf, n.sons[i],
             marker, indent + 4, maxRecDepth - 1)])
@@ -330,7 +330,7 @@ proc treeToYamlAux(conf: ConfigRef; n: PNode, marker: var IntSet, indent: int,
       else:
         if sonsLen(n) > 0:
           addf(result, ",$N$1\"sons\": [", [istr])
-          for i in countup(0, sonsLen(n) - 1):
+          for i in 0 ..< sonsLen(n):
             if i > 0: add(result, ",")
             addf(result, "$N$1$2", [rspaces(indent + 4), treeToYamlAux(conf, n.sons[i],
                 marker, indent + 4, maxRecDepth - 1)])
@@ -351,105 +351,258 @@ proc symToYaml(conf: ConfigRef; n: PSym, indent: int = 0, maxRecDepth: int = - 1
   var marker = initIntSet()
   result = symToYamlAux(conf, n, marker, indent, maxRecDepth)
 
-proc debugTree*(conf: ConfigRef; n: PNode, indent: int, maxRecDepth: int; renderType=false): Rope
-proc debugType(conf: ConfigRef; n: PType, maxRecDepth=100): Rope =
-  if n == nil:
-    result = rope("null")
-  else:
-    result = rope($n.kind)
-    if n.sym != nil:
-      add(result, " ")
-      add(result, n.sym.name.s)
-    if n.kind in IntegralTypes and n.n != nil:
-      add(result, ", n: ")
-      add(result, debugTree(conf, n.n, 2, maxRecDepth-1, renderType=false))
-    if (n.kind != tyString) and (sonsLen(n) > 0) and maxRecDepth != 0:
-      add(result, "(")
-      for i in countup(0, sonsLen(n) - 1):
-        if i > 0: add(result, ", ")
-        if n.sons[i] == nil:
-          add(result, "null")
-        else:
-          add(result, debugType(conf, n.sons[i], maxRecDepth-1))
-      if n.kind == tyObject and n.n != nil:
-        add(result, ", n: ")
-        add(result, debugTree(conf, n.n, 2, maxRecDepth-1, renderType=true))
-      add(result, ")")
+import tables
 
-proc debugTree(conf: ConfigRef; n: PNode, indent: int, maxRecDepth: int;
-               renderType=false): Rope =
-  if n == nil:
-    result = rope("null")
-  else:
-    var istr = rspaces(indent + 2)
-    result = "{$N$1\"kind\": $2" %
-             [istr, makeYamlString($n.kind)]
-    when defined(useNodeIds):
-      addf(result, ",$N$1\"id\": $2", [istr, rope(n.id)])
-    if conf != nil:
-      addf(result, ",$N$1\"info\": $2", [istr, lineInfoToStr(conf, n.info)])
-    if maxRecDepth != 0:
-      if card(n.flags) > 0:
-        addf(result, ",$N$1\"flags\": $2", [istr, rope($n.flags)])
-      case n.kind
-      of nkCharLit..nkUInt64Lit:
-        addf(result, ",$N$1\"intVal\": $2", [istr, rope(n.intVal)])
-      of nkFloatLit, nkFloat32Lit, nkFloat64Lit:
-        addf(result, ",$N$1\"floatVal\": $2",
-            [istr, rope(n.floatVal.toStrMaxPrecision)])
-      of nkStrLit..nkTripleStrLit:
-        addf(result, ",$N$1\"strVal\": $2", [istr, makeYamlString(n.strVal)])
-      of nkSym:
-        let s = n.sym
-        var symStr = ""
-        symStr.add "\"kind\": "
-        symStr.add $s.kind
-        symStr.add ", \"name\": "
-        symStr.add s.name.s
-        symStr.add ", \"id\": "
-        symStr.add s.id
-        if s.kind in {skField, skEnumField, skParam}:
-          symStr.add ", \"position\": "
-          symStr.add s.position
-        addf(result, ",$N$1\"sym\": {$2}", [
-             istr, rope(symStr)])
+const backrefStyle = "\e[90m"
+const enumStyle = "\e[34m"
+const numberStyle = "\e[33m"
+const stringStyle = "\e[32m"
+const resetStyle  = "\e[0m"
 
-        if renderType and n.sym.typ != nil:
-          addf(result, ",$N$1\"typ\": $2", [istr, debugType(conf, n.sym.typ, 2)])
-      of nkIdent:
-        if n.ident != nil:
-          addf(result, ",$N$1\"ident\": $2", [istr, makeYamlString(n.ident.s)])
-        else:
-          addf(result, ",$N$1\"ident\": null", [istr])
-      else:
-        if renderType and n.typ != nil:
-          addf(result, ",$N$1\"typ\": $2", [istr, debugType(conf, n.typ, 2)])
-        if sonsLen(n) > 0:
-          addf(result, ",$N$1\"sons\": [", [istr])
-          for i in countup(0, sonsLen(n) - 1):
-            if i > 0: add(result, ",")
-            addf(result, "$N$1$2", [rspaces(indent + 4), debugTree(conf, n.sons[i],
-                indent + 4, maxRecDepth - 1, renderType)])
-          addf(result, "$N$1]", [istr])
-    addf(result, "$N$1}", [rspaces(indent)])
+type
+  DebugPrinter = object
+    conf: ConfigRef
+    visited: Table[pointer, int]
+    renderSymType: bool
+    indent: int
+    currentLine: int
+    firstItem: bool
+    useColor: bool
+    res: string
+
+proc indentMore(this: var DebugPrinter) =
+  this.indent += 2
+
+proc indentLess(this: var DebugPrinter) =
+  this.indent -= 2
+
+proc newlineAndIndent(this: var DebugPrinter) =
+  this.res.add "\n"
+  this.currentLine += 1
+  for i in 0 ..< this.indent:
+    this.res.add ' '
+
+proc openCurly(this: var DebugPrinter) =
+  this.res.add "{"
+  this.indentMore
+  this.firstItem = true
+
+proc closeCurly(this: var DebugPrinter) =
+  this.indentLess
+  this.newlineAndIndent
+  this.res.add "}"
+
+proc comma(this: var DebugPrinter) =
+  this.res.add ", "
+
+proc openBracket(this: var DebugPrinter) =
+  this.res.add "["
+  #this.indentMore
+
+proc closeBracket(this: var DebugPrinter) =
+  #this.indentLess
+  this.res.add "]"
+
+proc key(this: var DebugPrinter; key: string) =
+  if not this.firstItem:
+    this.res.add ","
+  this.firstItem = false
+
+  this.newlineAndIndent
+  this.res.add "\""
+  this.res.add key
+  this.res.add "\": "
+
+proc value(this: var DebugPrinter; value: string) =
+  if this.useColor:
+    this.res.add stringStyle
+  this.res.add "\""
+  this.res.add value
+  this.res.add "\""
+  if this.useColor:
+    this.res.add resetStyle
+
+proc value(this: var DebugPrinter; value: BiggestInt) =
+  if this.useColor:
+    this.res.add numberStyle
+  this.res.add value
+  if this.useColor:
+    this.res.add resetStyle
+
+proc value[T: enum](this: var DebugPrinter; value: T) =
+  if this.useColor:
+    this.res.add enumStyle
+  this.res.add "\""
+  this.res.add $value
+  this.res.add "\""
+  if this.useColor:
+    this.res.add resetStyle
+
+proc value[T: enum](this: var DebugPrinter; value: set[T]) =
+  this.openBracket
+  let high = card(value)-1
+  var i = 0
+  for v in value:
+    this.value v
+    if i != high:
+      this.comma
+    inc i
+  this.closeBracket
+
+template earlyExit(this: var DebugPrinter; n: PType | PNode | PSym) =
+  if n == nil:
+    this.res.add "null"
+    return
+  let index = this.visited.getOrDefault(cast[pointer](n), -1)
+  if index < 0:
+    this.visited[cast[pointer](n)] = this.currentLine
+  else:
+    if this.useColor:
+      this.res.add backrefStyle
+    this.res.add "<defined "
+    this.res.add(this.currentLine - index)
+    this.res.add " lines upwards>"
+    if this.useColor:
+      this.res.add resetStyle
+    return
+
+proc value(this: var DebugPrinter; value: PType)
+proc value(this: var DebugPrinter; value: PNode)
+proc value(this: var DebugPrinter; value: PSym) =
+  earlyExit(this, value)
+
+  this.openCurly
+  this.key("kind")
+  this.value(value.kind)
+  this.key("name")
+  this.value(value.name.s)
+  this.key("id")
+  this.value(value.id)
+  if value.kind in {skField, skEnumField, skParam}:
+    this.key("position")
+    this.value(value.position)
+
+  if card(value.flags) > 0:
+    this.key("flags")
+    this.value(value.flags)
+
+  if this.renderSymType and value.typ != nil:
+    this.key "typ"
+    this.value(value.typ)
+
+  this.closeCurly
+
+proc value(this: var DebugPrinter; value: PType) =
+  earlyExit(this, value)
+
+  this.openCurly
+  this.key "kind"
+  this.value value.kind
+
+  this.key "id"
+  this.value value.id
+
+  if value.sym != nil:
+    this.key "sym"
+    this.value value.sym
+    #this.value value.sym.name.s
+
+  if card(value.flags) > 0:
+    this.key "flags"
+    this.value value.flags
+
+  if value.kind in IntegralTypes and value.n != nil:
+    this.key "n"
+    this.value value.n
+
+  if sonsLen(value) > 0:
+    this.key "sons"
+    this.openBracket
+    for i in 0 ..< sonsLen(value):
+      this.value value.sons[i]
+      if i != sonsLen(value) - 1:
+        this.comma
+    this.closeBracket
+
+  if value.n != nil:
+    this.key "n"
+    this.value value.n
+
+  this.closeCurly
+
+proc value(this: var DebugPrinter; value: PNode) =
+  earlyExit(this, value)
+
+  this.openCurly
+  this.key "kind"
+  this.value  value.kind
+  when defined(useNodeIds):
+    this.key "id"
+    this.value value.id
+  if this.conf != nil:
+    this.key "info"
+    this.value $lineInfoToStr(this.conf, value.info)
+  if card(value.flags) > 0:
+    this.key "flags"
+    this.value value.flags
+
+  case value.kind
+  of nkCharLit..nkUInt64Lit:
+    this.key "intVal"
+    this.value value.intVal
+  of nkFloatLit, nkFloat32Lit, nkFloat64Lit:
+    this.key "floatVal"
+    this.value value.floatVal.toStrMaxPrecision
+  of nkStrLit..nkTripleStrLit:
+    this.key "strVal"
+    this.value value.strVal
+  of nkSym:
+    this.key "sym"
+    this.value value.sym
+    #this.value value.sym.name.s
+  of nkIdent:
+    if value.ident != nil:
+      this.key "ident"
+      this.value value.ident.s
+  else:
+    if this.renderSymType and value.typ != nil:
+      this.key "typ"
+      this.value value.typ
+    if sonsLen(value) > 0:
+      this.key "sons"
+      this.openBracket
+      for i in 0 ..< sonsLen(value):
+        this.value value.sons[i]
+        if i != sonsLen(value) - 1:
+          this.comma
+      this.closeBracket
+
+  this.closeCurly
 
 when declared(echo):
   proc debug(n: PSym; conf: ConfigRef) =
-    if n == nil:
-      echo("null")
-    elif n.kind == skUnknown:
-      echo("skUnknown")
-    else:
-      #writeLine(stdout, $symToYaml(n, 0, 1))
-      echo("$1_$2: $3, $4, $5, $6" % [
-        n.name.s, $n.id, $flagsToStr(n.flags), $flagsToStr(n.loc.flags),
-        $lineInfoToStr(conf, n.info), $n.kind])
+    var this: DebugPrinter
+    this.visited = initTable[pointer, int]()
+    this.renderSymType = true
+    this.useColor = not defined(windows)
+    this.value(n)
+    echo($this.res)
 
   proc debug(n: PType; conf: ConfigRef) =
-    echo($debugType(conf, n))
+    var this: DebugPrinter
+    this.visited = initTable[pointer, int]()
+    this.renderSymType = true
+    this.useColor = not defined(windows)
+    this.value(n)
+    echo($this.res)
 
   proc debug(n: PNode; conf: ConfigRef) =
-    echo($debugTree(conf, n, 0, 100))
+    var this: DebugPrinter
+    this.visited = initTable[pointer, int]()
+    #this.renderSymType = true
+    this.useColor = not defined(windows)
+    this.value(n)
+    echo($this.res)
 
 proc nextTry(h, maxHash: Hash): Hash =
   result = ((5 * h) + 1) and maxHash
@@ -477,7 +630,7 @@ proc objectSetRawInsert(data: var TObjectSeq, obj: RootRef) =
 proc objectSetEnlarge(t: var TObjectSet) =
   var n: TObjectSeq
   newSeq(n, len(t.data) * GrowthFactor)
-  for i in countup(0, high(t.data)):
+  for i in 0 .. high(t.data):
     if t.data[i] != nil: objectSetRawInsert(n, t.data[i])
   swap(t.data, n)
 
@@ -556,7 +709,7 @@ proc symTabReplace*(t: var TStrTable, prevSym: PSym, newSym: PSym) =
 proc strTableEnlarge(t: var TStrTable) =
   var n: seq[PSym]
   newSeq(n, len(t.data) * GrowthFactor)
-  for i in countup(0, high(t.data)):
+  for i in 0 .. high(t.data):
     if t.data[i] != nil: strTableRawInsert(n, t.data[i])
   swap(t.data, n)
 
@@ -692,7 +845,7 @@ iterator items*(tab: TStrTable): PSym =
     s = nextIter(it, tab)
 
 proc hasEmptySlot(data: TIdPairSeq): bool =
-  for h in countup(0, high(data)):
+  for h in 0 .. high(data):
     if data[h].key == nil:
       return true
   result = false
@@ -747,7 +900,7 @@ proc idTablePut(t: var TIdTable, key: PIdObj, val: RootRef) =
   else:
     if mustRehash(len(t.data), t.counter):
       newSeq(n, len(t.data) * GrowthFactor)
-      for i in countup(0, high(t.data)):
+      for i in 0 .. high(t.data):
         if t.data[i].key != nil:
           idTableRawInsert(n, t.data[i].key, t.data[i].val)
       assert(hasEmptySlot(n))
@@ -793,7 +946,7 @@ proc idNodeTablePut(t: var TIdNodeTable, key: PIdObj, val: PNode) =
     if mustRehash(len(t.data), t.counter):
       var n: TIdNodePairSeq
       newSeq(n, len(t.data) * GrowthFactor)
-      for i in countup(0, high(t.data)):
+      for i in 0 .. high(t.data):
         if t.data[i].key != nil:
           idNodeTableRawInsert(n, t.data[i].key, t.data[i].val)
       swap(t.data, n)
@@ -807,7 +960,7 @@ iterator pairs*(t: TIdNodeTable): tuple[key: PIdObj, val: PNode] =
 proc initIITable(x: var TIITable) =
   x.counter = 0
   newSeq(x.data, StartSize)
-  for i in countup(0, StartSize - 1): x.data[i].key = InvalidKey
+  for i in 0 ..< StartSize: x.data[i].key = InvalidKey
 
 proc iiTableRawGet(t: TIITable, key: int): int =
   var h: Hash
@@ -841,10 +994,18 @@ proc iiTablePut(t: var TIITable, key, val: int) =
     if mustRehash(len(t.data), t.counter):
       var n: TIIPairSeq
       newSeq(n, len(t.data) * GrowthFactor)
-      for i in countup(0, high(n)): n[i].key = InvalidKey
-      for i in countup(0, high(t.data)):
+      for i in 0 .. high(n): n[i].key = InvalidKey
+      for i in 0 .. high(t.data):
         if t.data[i].key != InvalidKey:
           iiTableRawInsert(n, t.data[i].key, t.data[i].val)
       swap(t.data, n)
     iiTableRawInsert(t.data, key, val)
     inc(t.counter)
+
+proc isAddrNode*(n: PNode): bool =
+  case n.kind
+    of nkAddr, nkHiddenAddr: true
+    of nkCallKinds:
+      if n[0].kind == nkSym and n[0].sym.magic == mAddr: true
+      else: false
+    else: false

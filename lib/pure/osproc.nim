@@ -57,8 +57,8 @@ type
       id: Handle
     else:
       inHandle, outHandle, errHandle: FileHandle
-      inStream, outStream, errStream: Stream
       id: Pid
+    inStream, outStream, errStream: owned(Stream)
     exitStatus: cint
     exitFlag: bool
     options: set[ProcessOption]
@@ -97,7 +97,8 @@ proc execProcess*(command: string,
   ## Example:
   ##
   ## .. code-block:: Nim
-  ##  let outp = execProcess("nim c -r mytestfile.nim")
+  ##  let outp = execProcess("nim", args=["c", "-r", "mytestfile.nim"], options={poUsePath})
+  ##  let outp_shell = execProcess("nim c -r mytestfile.nim")
   ##  # Note: outp may have an interleave of text from the nim compile
   ##  # and any output from mytestfile when it runs
 
@@ -125,7 +126,7 @@ proc startProcess*(command: string,
                    args: openArray[string] = [],
                    env: StringTableRef = nil,
                    options: set[ProcessOption] = {poStdErrToStdOut}):
-              Process {.rtl, extern: "nosp$1", tags: [ExecIOEffect, ReadEnvEffect,
+              owned(Process) {.rtl, extern: "nosp$1", tags: [ExecIOEffect, ReadEnvEffect,
               RootEffect].}
   ## Starts a process. `Command` is the executable file, `workingDir` is the
   ## process's working directory. If ``workingDir == ""`` the current directory
@@ -469,7 +470,7 @@ when defined(Windows) and not defined(useNimRtl):
                               addr bytesWritten, nil)
     if a == 0: raiseOSError(osLastError())
 
-  proc newFileHandleStream(handle: Handle): FileHandleStream =
+  proc newFileHandleStream(handle: Handle): owned FileHandleStream =
     new(result)
     result.handle = handle
     result.closeImpl = hsClose
@@ -572,7 +573,7 @@ when defined(Windows) and not defined(useNimRtl):
                  workingDir: string = "",
                  args: openArray[string] = [],
                  env: StringTableRef = nil,
-                 options: set[ProcessOption] = {poStdErrToStdOut}): Process =
+                 options: set[ProcessOption] = {poStdErrToStdOut}): owned Process =
     var
       si: STARTUPINFO
       procInfo: PROCESS_INFORMATION
@@ -723,15 +724,21 @@ when defined(Windows) and not defined(useNimRtl):
 
   proc inputStream(p: Process): Stream =
     streamAccess(p)
-    result = newFileHandleStream(p.inHandle)
+    if p.inStream == nil:
+      p.inStream = newFileHandleStream(p.inHandle)
+    result = p.inStream
 
   proc outputStream(p: Process): Stream =
     streamAccess(p)
-    result = newFileHandleStream(p.outHandle)
+    if p.outStream == nil:
+      p.outStream = newFileHandleStream(p.outHandle)
+    result = p.outStream
 
   proc errorStream(p: Process): Stream =
     streamAccess(p)
-    result = newFileHandleStream(p.errHandle)
+    if p.errStream == nil:
+      p.errStream = newFileHandleStream(p.errHandle)
+    result = p.errStream
 
   proc execCmd(command: string): int =
     var
@@ -839,7 +846,7 @@ elif not defined(useNimRtl):
                  workingDir: string = "",
                  args: openArray[string] = [],
                  env: StringTableRef = nil,
-                 options: set[ProcessOption] = {poStdErrToStdOut}): Process =
+                 options: set[ProcessOption] = {poStdErrToStdOut}): owned Process =
     var
       pStdin, pStdout, pStderr: array[0..1, cint]
     new(result)

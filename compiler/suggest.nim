@@ -275,7 +275,7 @@ template wholeSymTab(cond, section: untyped) =
                                  pm, c.inTypeContext > 0, scopeN))
 
 proc suggestSymList(c: PContext, list, f: PNode; info: TLineInfo, outputs: var Suggestions) =
-  for i in countup(0, sonsLen(list) - 1):
+  for i in 0 ..< sonsLen(list):
     if list.sons[i].kind == nkSym:
       suggestField(c, list.sons[i].sym, f, info, outputs)
     #else: InternalError(list.info, "getSymFromList")
@@ -283,12 +283,12 @@ proc suggestSymList(c: PContext, list, f: PNode; info: TLineInfo, outputs: var S
 proc suggestObject(c: PContext, n, f: PNode; info: TLineInfo, outputs: var Suggestions) =
   case n.kind
   of nkRecList:
-    for i in countup(0, sonsLen(n)-1): suggestObject(c, n.sons[i], f, info, outputs)
+    for i in 0 ..< sonsLen(n): suggestObject(c, n.sons[i], f, info, outputs)
   of nkRecCase:
     var L = sonsLen(n)
     if L > 0:
       suggestObject(c, n.sons[0], f, info, outputs)
-      for i in countup(1, L-1): suggestObject(c, lastSon(n.sons[i]), f, info, outputs)
+      for i in 1 ..< L: suggestObject(c, lastSon(n.sons[i]), f, info, outputs)
   of nkSym: suggestField(c, n.sym, f, info, outputs)
   else: discard
 
@@ -395,7 +395,7 @@ proc suggestFieldAccess(c: PContext, n, field: PNode, outputs: var Suggestions) 
     suggestOperations(c, n, field, typ, outputs)
   else:
     let orig = typ # skipTypes(typ, {tyGenericInst, tyAlias, tySink})
-    typ = skipTypes(typ, {tyGenericInst, tyVar, tyLent, tyPtr, tyRef, tyAlias, tySink})
+    typ = skipTypes(typ, {tyGenericInst, tyVar, tyLent, tyPtr, tyRef, tyAlias, tySink, tyOwned})
     if typ.kind == tyObject:
       var t = typ
       while true:
@@ -539,10 +539,6 @@ proc markUsed(conf: ConfigRef; info: TLineInfo; s: PSym; usageSym: var PSym) =
     if sfError in s.flags: userError(conf, info, s)
   when defined(nimsuggest):
     suggestSym(conf, info, s, usageSym, false)
-
-proc useSym*(conf: ConfigRef; sym: PSym; usageSym: var PSym): PNode =
-  result = newSymNode(sym)
-  markUsed(conf, result.info, sym, usageSym)
 
 proc safeSemExpr*(c: PContext, n: PNode): PNode =
   # use only for idetools support!

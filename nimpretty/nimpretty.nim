@@ -26,7 +26,8 @@ Usage:
   nimpretty [options] file.nim
 Options:
   --output:file         set the output file (default: overwrite the input file)
-  --indent:N[=2]        set the number of spaces that is used for indentation
+  --indent:N[=0]        set the number of spaces that is used for indentation
+                        --indent:0 means autodetection (default behaviour)
   --version             show the version
   --help                show this help
 """
@@ -48,7 +49,7 @@ type
 proc prettyPrint(infile, outfile: string, opt: PrettyOptions) =
   var conf = newConfigRef()
   let fileIdx = fileInfoIdx(conf, AbsoluteFile infile)
-  conf.outFile = AbsoluteFile outfile
+  conf.outFile = RelativeFile outfile
   when defined(nimpretty2):
     var p: TParsers
     p.parser.em.indWidth = opt.indWidth

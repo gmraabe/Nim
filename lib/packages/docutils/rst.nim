@@ -45,8 +45,8 @@ type
     mwUnsupportedField
 
   MsgHandler* = proc (filename: string, line, col: int, msgKind: MsgKind,
-                       arg: string) {.closure.} ## what to do in case of an error
-  FindFileHandler* = proc (filename: string): string {.closure.}
+                       arg: string) {.closure, gcsafe.} ## what to do in case of an error
+  FindFileHandler* = proc (filename: string): string {.closure, gcsafe.}
 
 const
   messages: array[MsgKind, string] = [
@@ -115,8 +115,8 @@ const
 type
   TokType = enum
     tkEof, tkIndent, tkWhite, tkWord, tkAdornment, tkPunct, tkOther
-  Token = object             # a RST token
-    kind*: TokType           # the type of the token
+  Token = object              # a RST token
+    kind*: TokType            # the type of the token
     ival*: int                # the indentation or parsed integer value
     symbol*: string           # the parsed symbol as string
     line*, col*: int          # line and column of the token
@@ -153,20 +153,27 @@ proc getAdornment(L: var Lexer, tok: var Token) =
   inc(L.col, pos - L.bufpos)
   L.bufpos = pos
 
+proc getBracket(L: var Lexer, tok: var Token) =
+  tok.kind = tkPunct
+  tok.line = L.line
+  tok.col = L.col
+  add(tok.symbol, L.buf[L.bufpos])
+  inc L.col
+  inc L.bufpos
+
 proc getIndentAux(L: var Lexer, start: int): int =
   var pos = start
-  var buf = L.buf
   # skip the newline (but include it in the token!)
-  if buf[pos] == '\x0D':
-    if buf[pos + 1] == '\x0A': inc(pos, 2)
+  if L.buf[pos] == '\x0D':
+    if L.buf[pos + 1] == '\x0A': inc(pos, 2)
     else: inc(pos)
-  elif buf[pos] == '\x0A':
+  elif L.buf[pos] == '\x0A':
     inc(pos)
   if L.skipPounds:
-    if buf[pos] == '#': inc(pos)
-    if buf[pos] == '#': inc(pos)
+    if L.buf[pos] == '#': inc(pos)
+    if L.buf[pos] == '#': inc(pos)
   while true:
-    case buf[pos]
+    case L.buf[pos]
     of ' ', '\x0B', '\x0C':
       inc(pos)
       inc(result)
@@ -175,9 +182,9 @@ proc getIndentAux(L: var Lexer, start: int): int =
       result = result - (result mod 8) + 8
     else:
       break                   # EndOfFile also leaves the loop
-  if buf[pos] == '\0':
+  if L.buf[pos] == '\0':
     result = 0
-  elif (buf[pos] == '\x0A') or (buf[pos] == '\x0D'):
+  elif (L.buf[pos] == '\x0A') or (L.buf[pos] == '\x0D'):
     # look at the next line for proper indentation:
     result = getIndentAux(L, pos)
   L.bufpos = pos              # no need to set back buf
@@ -206,11 +213,13 @@ proc rawGetTok(L: var Lexer, tok: var Token) =
       rawGetTok(L, tok)       # ignore spaces before \n
   of '\x0D', '\x0A':
     getIndent(L, tok)
-  of '!', '\"', '#', '$', '%', '&', '\'', '(', ')', '*', '+', ',', '-', '.',
-     '/', ':', ';', '<', '=', '>', '?', '@', '[', '\\', ']', '^', '_', '`', '{',
-     '|', '}', '~':
+  of '!', '\"', '#', '$', '%', '&', '\'',  '*', '+', ',', '-', '.',
+     '/', ':', ';', '<', '=', '>', '?', '@', '\\', '^', '_', '`',
+     '|', '~':
     getAdornment(L, tok)
     if len(tok.symbol) <= 3: tok.kind = tkPunct
+  of '(', ')', '[', ']', '{', '}':
+    getBracket(L, tok)
   else:
     tok.line = L.line
     tok.col = L.col
@@ -838,7 +847,8 @@ proc parseInline(p: var RstParser, father: PRstNode) =
       var n = newRstNode(rnSubstitutionReferences)
       parseUntil(p, n, "|", false)
       add(father, n)
-    elif roSupportMarkdown in p.s.options and p.tok[p.idx].symbol == "[" and
+    elif roSupportMarkdown in p.s.options and
+        p.tok[p.idx].symbol == "[" and p.tok[p.idx+1].symbol != "[" and
         parseMarkdownLink(p, father):
       discard "parseMarkdownLink already processed it"
     else:
